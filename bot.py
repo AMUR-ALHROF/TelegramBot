@@ -20,6 +20,8 @@ from config import Config
 from ai_analyzer import AIAnalyzer
 from treasure_hunter import TreasureHunterGuide
 from utils import RateLimiter, image_to_base64, format_response, escape_markdown
+from database import DatabaseManager
+from leaderboard import LeaderboardManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,10 @@ class TreasureHunterBot:
         self.ai_analyzer = AIAnalyzer(Config.OPENAI_API_KEY)
         self.treasure_guide = TreasureHunterGuide()
         self.rate_limiter = RateLimiter(Config.MAX_REQUESTS_PER_MINUTE)
+        
+        # Initialize database and leaderboard
+        self.db_manager = DatabaseManager()
+        self.leaderboard = LeaderboardManager(self.db_manager)
         
         # Initialize Telegram application
         self.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
@@ -499,20 +505,30 @@ Upload your image now, and I'll provide detailed treasure hunting analysis! 🔍
         try:
             logger.info("Starting Treasure Hunter Bot...")
             
-            # Start the application
+            # Initialize and start the application
             await self.application.initialize()
             await self.application.start()
+            
+            # Start polling for updates
             await self.application.updater.start_polling()
             
             logger.info("Bot started successfully!")
             
-            # Keep the bot running
-            await self.application.updater.idle()
+            # Keep the bot running indefinitely
+            import asyncio
+            while True:
+                await asyncio.sleep(1)
             
+        except KeyboardInterrupt:
+            logger.info("Bot shutdown requested")
         except Exception as e:
             logger.error(f"Error starting bot: {e}")
             raise
         finally:
             # Cleanup
-            await self.application.stop()
-            await self.application.shutdown()
+            try:
+                await self.application.updater.stop()
+                await self.application.stop()
+                await self.application.shutdown()
+            except Exception as cleanup_error:
+                logger.error(f"Error during cleanup: {cleanup_error}")
