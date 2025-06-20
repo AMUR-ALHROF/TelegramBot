@@ -28,9 +28,8 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", None) # إذا لم يتم ت�
 WEBHOOK_PATH = "/webhook"
 
 # -- تهيئة البوت --
-# هذا السطر ينشئ نسخة من كلاس البوت الخاص بك
-# افترض أن TreasureHunterBot يأخذ التوكن عند التهيئة.
-bot_instance = TreasureHunterBot(token=TELEGRAM_BOT_TOKEN)
+# لا تمرر 'token' هنا إلا إذا كانت دالة __init__ في TreasureHunterBot تستقبله بشكل صريح
+bot_instance = TreasureHunterBot() # تم تعديل هذا السطر
 
 # -- نقطة نهاية الويب هوك لتيليجرام --
 @app.route(WEBHOOK_PATH, methods=['POST'])
@@ -43,7 +42,7 @@ async def telegram_webhook():
     update_json = request.get_json()
     if not update_json:
         logger.warning("Received empty or invalid JSON from webhook")
-        return "OK" # هذا هو الـ return الأول داخل دالة
+        return "OK"
 
     try:
         # **هنا الجزء الحاسم:**
@@ -58,13 +57,13 @@ async def telegram_webhook():
         logger.info(f"Update {update_json.get('update_id')} received and processing.")
 
     except Exception as e:
-        logger.error(f"Error processing update: {e}", exc_info=True) # exc_info=True لطبع تفاصيل الخطأ كاملة
-        return "Error", 500 # هذا هو الـ return الثاني داخل دالة
-    return "OK" # **هذا هو الـ return الذي يجب أن يكون في نهاية دالة telegram_webhook()**
+        logger.error(f"Error processing update: {e}", exc_info=True)
+        return "Error", 500
+    return "OK"
 
 # -- نقطة نهاية أساسية للتحقق من عمل التطبيق --
 @app.route('/', methods=['GET'])
 def home():
-    return "Bot is running and listening for webhooks." # هذا الـ return داخل دالة
+    return "Bot is running and listening for webhooks."
 
-# تأكد من عدم وجود أي كود آخر بعد هذه النقطة، خاصة جزء if __name__ == "__main__":
+# لا يوجد كود هنا بعد الآن (تم حذف جزء if __name__ == "__main__":)
