@@ -67,13 +67,3 @@ return "OK"
 def home():
     return "Bot is running and listening for webhooks."
 
-# -- نقطة البدء الرئيسية لخادم Flask --
-if __name__ == "__main__":
-    # المنفذ الذي سيستمع عليه الخادم
-    # Render سيوفر قيمة لـ PORT كمتغير بيئة. نستخدم 10000 كافتراضي للاختبار المحلي.
-    port = int(os.environ.get("PORT", 10000))
-
-    # تشغيل خادم Flask
-    # host='0.0.0.0' ضروري جداً للاستضافة على Render.
-    logger.info(f"Starting Flask app on port {port}")
-    app.run(host='0.0.0.0', port=port)
