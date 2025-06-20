@@ -6,3 +6,4 @@ python-telegram-bot>=22.1
 sqlalchemy>=2.0.41
 Flask
 gunicorn
+requests
