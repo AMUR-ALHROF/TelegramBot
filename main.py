@@ -43,7 +43,7 @@ async def telegram_webhook():
     update_json = request.get_json()
     if not update_json:
         logger.warning("Received empty or invalid JSON from webhook")
-        return "OK"
+        return "OK" # هذا هو الـ return الأول داخل دالة
 
     try:
         # **هنا الجزء الحاسم:**
@@ -59,11 +59,12 @@ async def telegram_webhook():
 
     except Exception as e:
         logger.error(f"Error processing update: {e}", exc_info=True) # exc_info=True لطبع تفاصيل الخطأ كاملة
-        return "Error", 500
-return "OK"
+        return "Error", 500 # هذا هو الـ return الثاني داخل دالة
+    return "OK" # **هذا هو الـ return الذي يجب أن يكون في نهاية دالة telegram_webhook()**
 
 # -- نقطة نهاية أساسية للتحقق من عمل التطبيق --
 @app.route('/', methods=['GET'])
 def home():
-    return "Bot is running and listening for webhooks."
+    return "Bot is running and listening for webhooks." # هذا الـ return داخل دالة
 
+# تأكد من عدم وجود أي كود آخر بعد هذه النقطة، خاصة جزء if __name__ == "__main__":
