@@ -1,69 +1,104 @@
-import logging
-import asyncio
 import os
-from flask import Flask, request, abort
-from bot import TreasureHunterBot  # تأكد أن اسم ملف البوت الخاص بك هو 'bot.py' وأن الكلاس هو 'TreasureHunterBot'
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import openai
+from PIL import Image
+import requests
+from io import BytesIO
 
-# -- إعدادات التسجيل (Logging) --
+# إعداد سجل الأحداث
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# -- إعدادات Flask --
-app = Flask(__name__)
+class TreasureAnalyzerBot:
+    def __init__(self):
+        # جلب المفاتيح من البيئة
+        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
 
-# احصل على توكن البوت من متغير البيئة الذي ستضيفه في Render
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
-    logger.error("TELEGRAM_BOT_TOKEN environment variable not set. Exiting.")
-    exit(1)
+        if not self.telegram_token:
+            raise ValueError("يجب ضبط متغير البيئة TELEGRAM_BOT_TOKEN")
+        if not self.openai_api_key:
+            raise ValueError("يجب ضبط متغير البيئة OPENAI_API_KEY")
 
-# WEBHOOK_SECRET (مفتاح سري لتأمين الويب هوك، اختياري لكن موصى به)
-# يجب أن يكون هذا أيضاً متغير بيئة في Render
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", None) # إذا لم يتم تعيينه، سيكون None
+        openai.api_key = self.openai_api_key
+        self.app = Application.builder().token(self.telegram_token).build()
 
-# مسار الويب هوك الذي ستستقبل عليه تحديثات تيليجرام
-WEBHOOK_PATH = "/webhook"
+        # تعريف الأوامر
+        self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("help", self.help))
+        self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_image))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
 
-# -- تهيئة البوت --
-# لا تمرر 'token' هنا إلا إذا كانت دالة __init__ في TreasureHunterBot تستقبله بشكل صريح
-bot_instance = TreasureHunterBot() # تم تعديل هذا السطر
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("👋 أهلاً بك في بوت تحليل الكنوز والنقوش القديمة باستخدام الذكاء الاصطناعي. أرسل صورة أو سؤال!")
 
-# -- نقطة نهاية الويب هوك لتيليجرام --
-@app.route(WEBHOOK_PATH, methods=['POST'])
-async def telegram_webhook():
-    # التحقق من مفتاح الويب هوك السري إذا تم تعيينه
-    if WEBHOOK_SECRET and request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
-        logger.warning("Invalid webhook secret token received.")
-        abort(403) # Forbidden access
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "/start - بدء استخدام البوت\n"
+            "/help - التعليمات\n"
+            "📸 أرسل صورة لتحليلها\n"
+            "❓ أرسل سؤالًا عن التاريخ أو الآثار"
+        )
 
-    update_json = request.get_json()
-    if not update_json:
-        logger.warning("Received empty or invalid JSON from webhook")
-        return "OK"
+    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        question = update.message.text
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "أجب على الأسئلة المتعلقة بالكنوز والنقوش القديمة باللغة العربية."},
+                    {"role": "user", "content": question}
+                ],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            answer = response.choices[0].message.content
+            await update.message.reply_text(answer)
+        except Exception as e:
+            logger.error(e)
+            await update.message.reply_text("حدث خطأ أثناء محاولة الاتصال بـ GPT. الرجاء المحاولة لاحقًا.")
 
-    try:
-        # **هنا الجزء الحاسم:**
-        # يجب أن يكون لدى كلاس TreasureHunterBot (في ملف bot.py)
-        # دالة اسمها `process_telegram_update` (أو ما شابه)
-        # تستقبل تحديثات Telegram على شكل قاموس (JSON)
-        # وتقوم بمعالجتها.
+    async def handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        image = BytesIO(photo_bytes)
 
-        # نحن نستخدم asyncio.create_task لجدولة معالجة التحديث
-        # حتى لا يتسبب في حظر خادم الويب.
-        asyncio.create_task(bot_instance.process_telegram_update(update_json))
-        logger.info(f"Update {update_json.get('update_id')} received and processing.")
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "حلل هذه الصورة بحثاً عن دلائل دفائن أو نقوش قديمة"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode()
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1000
+            )
+            result = response.choices[0].message.content
+            await update.message.reply_text(result)
+        except Exception as e:
+            logger.error(e)
+            await update.message.reply_text("حدث خطأ أثناء تحليل الصورة. الرجاء التأكد من جودة الصورة أو المحاولة لاحقًا.")
 
-    except Exception as e:
-        logger.error(f"Error processing update: {e}", exc_info=True)
-        return "Error", 500
-    return "OK"
+    def run(self):
+        logger.info("✅ البوت يعمل الآن...")
+        self.app.run_polling()
 
-# -- نقطة نهاية أساسية للتحقق من عمل التطبيق --
-@app.route('/', methods=['GET'])
-def home():
-    return "Bot is running and listening for webhooks."
 
-# لا يوجد كود هنا بعد الآن (تم حذف جزء if __name__ == "__main__":)
+# نقطة البداية
+if __name__ == '__main__':
+    bot = TreasureAnalyzerBot()
+    bot.run()
