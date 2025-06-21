@@ -1,8 +1,7 @@
 import os
 import logging
 from flask import Flask
-from threading import Thread
-
+from threading import Thread  # لم نعد بحاجة إلى Thread هنا بنفس الطريقة
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import openai
@@ -18,8 +17,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Flask لتشغيل Web Service
-app = Flask(__name__)
+# تهيئة تطبيق Flask
+app = Flask(__name__) # هذا هو متغير "app" الذي سيبحث عنه Gunicorn
 
 class TreasureAnalyzerBot:
     def __init__(self):
@@ -27,8 +26,10 @@ class TreasureAnalyzerBot:
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
 
         if not self.telegram_token:
+            logger.error("TELEGRAM_BOT_TOKEN مفقود في متغيرات البيئة.")
             raise ValueError("TELEGRAM_BOT_TOKEN مفقود")
         if not self.openai_api_key:
+            logger.error("OPENAI_API_KEY مفقود في متغيرات البيئة.")
             raise ValueError("OPENAI_API_KEY مفقود")
 
         openai.api_key = self.openai_api_key
@@ -52,6 +53,8 @@ class TreasureAnalyzerBot:
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
+            # رسالة التحميل لانتظار الرد من GPT
+            await update.message.reply_text("جاري التفكير...")
             response = openai.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -62,26 +65,28 @@ class TreasureAnalyzerBot:
             answer = response.choices[0].message.content
             await update.message.reply_text(answer)
         except Exception as e:
-            logger.error(e)
-            await update.message.reply_text("حدث خطأ أثناء الاتصال بـ GPT.")
+            logger.error(f"خطأ في معالجة النص: {e}")
+            await update.message.reply_text("حدث خطأ أثناء الاتصال بـ GPT. يرجى المحاولة مرة أخرى.")
 
     async def handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        image = BytesIO(photo_bytes)
-
         try:
+            # رسالة التحميل لانتظار الرد من GPT-Vision
+            await update.message.reply_text("جاري تحليل الصورة...")
+            photo_file = await update.message.photo[-1].get_file()
+            photo_bytes = await photo_file.download_as_bytearray()
+            image_base64 = base64.b64encode(photo_bytes).decode('utf-8')
+
             response = openai.chat.completions.create(
                 model="gpt-4-vision-preview",
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "حلل هذه الصورة بحثًا عن دلائل آثار."},
+                            {"type": "text", "text": "حلل هذه الصورة بحثًا عن دلائل آثار، كن دقيقاً ومفصلاً."},
                             {
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode()
+                                    "url": f"data:image/jpeg;base64,{image_base64}"
                                 }
                             }
                         ]
@@ -91,20 +96,33 @@ class TreasureAnalyzerBot:
             result = response.choices[0].message.content
             await update.message.reply_text(result)
         except Exception as e:
-            logger.error(e)
-            await update.message.reply_text("تعذر تحليل الصورة.")
+            logger.error(f"خطأ في معالجة الصورة: {e}")
+            await update.message.reply_text("تعذر تحليل الصورة. يرجى التأكد من أن الصورة واضحة أو المحاولة لاحقاً.")
 
-    def run(self):
-        logger.info("✅ البوت يعمل الآن...")
 
-        def start_bot():
-            self.bot_app.run_polling()
+# إنشاء مثيل البوت
+bot_instance = TreasureAnalyzerBot()
 
-        Thread(target=start_bot).start()
-
-bot = TreasureAnalyzerBot()
-bot.run()
-
+# نقطة الدخول لتطبيق Flask
 @app.route('/')
 def home():
-    return "✅ البوت يعمل على Render Web Service!"
+    return "✅ البوت يعمل على Render Web Service! (Telegram polling is active)"
+
+# دالة لتهيئة وتشغيل البوت
+def start_telegram_bot_polling():
+    logger.info("✅ بدأ تشغيل بوت التليجرام (polling)...")
+    bot_instance.bot_app.run_polling()
+
+# هذا هو الجزء الأهم: تشغيل البوت في ثريد منفصل عند بدء تشغيل تطبيق Flask
+# لا يجب أن يكون هذا داخل `if __name__ == '__main__':` لأنه Gunicorn سيتولى التشغيل
+# ولكن يجب أن يتم تشغيله قبل أن يبدأ Gunicorn في خدمة الطلبات.
+# سنقوم بذلك عند بدء تشغيل Flask
+@app.before_first_request
+def activate_telegram_bot_thread():
+    logger.info("تفعيل ثريد البوت عند أول طلب لخدمة الويب.")
+    # التأكد من أن البوت لا يتم تشغيله إلا مرة واحدة
+    if not hasattr(activate_telegram_bot_thread, 'bot_started'):
+        Thread(target=start_telegram_bot_polling, daemon=True).start()
+        activate_telegram_bot_thread.bot_started = True
+
+# ملاحظة: لا تستخدم app.run() هنا، Gunicorn سيتولى تشغيل تطبيق Flask.
