@@ -1,7 +1,7 @@
 import os
 import logging
 from flask import Flask
-from threading import Thread  # لم نعد بحاجة إلى Thread هنا بنفس الطريقة
+from threading import Thread
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import openai
@@ -53,7 +53,6 @@ class TreasureAnalyzerBot:
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            # رسالة التحميل لانتظار الرد من GPT
             await update.message.reply_text("جاري التفكير...")
             response = openai.chat.completions.create(
                 model="gpt-4",
@@ -70,7 +69,6 @@ class TreasureAnalyzerBot:
 
     async def handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            # رسالة التحميل لانتظار الرد من GPT-Vision
             await update.message.reply_text("جاري تحليل الصورة...")
             photo_file = await update.message.photo[-1].get_file()
             photo_bytes = await photo_file.download_as_bytearray()
@@ -99,7 +97,6 @@ class TreasureAnalyzerBot:
             logger.error(f"خطأ في معالجة الصورة: {e}")
             await update.message.reply_text("تعذر تحليل الصورة. يرجى التأكد من أن الصورة واضحة أو المحاولة لاحقاً.")
 
-
 # إنشاء مثيل البوت
 bot_instance = TreasureAnalyzerBot()
 
@@ -113,16 +110,18 @@ def start_telegram_bot_polling():
     logger.info("✅ بدأ تشغيل بوت التليجرام (polling)...")
     bot_instance.bot_app.run_polling()
 
-# هذا هو الجزء الأهم: تشغيل البوت في ثريد منفصل عند بدء تشغيل تطبيق Flask
-# لا يجب أن يكون هذا داخل `if __name__ == '__main__':` لأنه Gunicorn سيتولى التشغيل
-# ولكن يجب أن يتم تشغيله قبل أن يبدأ Gunicorn في خدمة الطلبات.
-# سنقوم بذلك عند بدء تشغيل Flask
-@app.before_first_request
-def activate_telegram_bot_thread():
-    logger.info("تفعيل ثريد البوت عند أول طلب لخدمة الويب.")
-    # التأكد من أن البوت لا يتم تشغيله إلا مرة واحدة
-    if not hasattr(activate_telegram_bot_thread, 'bot_started'):
-        Thread(target=start_telegram_bot_polling, daemon=True).start()
-        activate_telegram_bot_thread.bot_started = True
+# ***الجزء المعدل الرئيسي هنا***
+# سنقوم بتشغيل البوت في ثريد منفصل فوراً عند بدء تشغيل السكريبت.
+# هذا يضمن بدء البوت بغض النظر عن أول طلب لـ Flask.
+# تأكد أن هذا الجزء يأتي بعد تعريف 'bot_instance'
+if __name__ != '__main__': # هذا الشرط يعني "إذا لم يكن السكريبت يُشغل مباشرة (مثل python main.py)"
+    # ولكن يتم استيراده بواسطة Gunicorn.
+    # في بيئة Gunicorn، يتم استيراد ملفك، وليس تشغيله مباشرة كـ __main__.
+    # لذلك، هذا هو المكان المناسب لبدء الثريد الخاص بالبوت.
+    logger.info("يتم استيراد main.py بواسطة Gunicorn. بدء ثريد البوت.")
+    # التأكد من أن البوت لا يتم تشغيله إلا مرة واحدة لكل عملية Gunicorn Worker
+    # (Gunicorn قد يشغل عدة عمليات 'worker' لتطبيقك)
+    # لا حاجة لـ 'daemon=True' إذا كان Gunicorn سيهتم بإغلاق الثريدات.
+    Thread(target=start_telegram_bot_polling).start()
 
 # ملاحظة: لا تستخدم app.run() هنا، Gunicorn سيتولى تشغيل تطبيق Flask.
