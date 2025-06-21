@@ -4,9 +4,9 @@ import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import openai
-from PIL import Image
-import requests
-from io import BytesIO
+from PIL import Image # للتأكد من وجودها إذا كنت تستخدم معالجة الصور
+import requests # للتأكد من وجودها إذا كنت تستخدم معالجة الصور
+from io import BytesIO # للتأكد من وجودها إذا كنت تستخدم معالجة الصور
 import base64
 
 # إعداد السجل
@@ -22,15 +22,15 @@ class TreasureAnalyzerBot:
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
 
         if not self.telegram_token:
-            logger.error("TELEGRAM_BOT_TOKEN مفقود في متغيرات البيئة.")
+            logger.critical("TELEGRAM_BOT_TOKEN مفقود في متغيرات البيئة. لا يمكن بدء البوت.")
             raise ValueError("TELEGRAM_BOT_TOKEN مفقود")
         if not self.openai_api_key:
-            logger.error("OPENAI_API_KEY مفقود في متغيرات البيئة.")
+            logger.critical("OPENAI_API_KEY مفقود في متغيرات البيئة. لا يمكن الاتصال بـ OpenAI.")
             raise ValueError("OPENAI_API_KEY مفقود")
 
         openai.api_key = self.openai_api_key
         self.application_builder = Application.builder().token(self.telegram_token)
-        self.bot_app = None # سيتم تهيئته لاحقاً في الثريد الصحيح
+        self.bot_app = None # سيتم تهيئته لاحقاً
 
         logger.info("TreasureAnalyzerBot instance initialized (tokens loaded).")
 
@@ -62,17 +62,20 @@ class TreasureAnalyzerBot:
             logger.info(f"Received text message from user {update.message.from_user.id}")
             await update.message.reply_text("جاري التفكير...")
             response = openai.chat.completions.create(
-                model="gpt-4",
+                model="gpt-3.5-turbo", # ****** تم التغيير هنا من gpt-4 إلى gpt-3.5-turbo ******
                 messages=[
-                    {"role": "system", "content": "أجب على الأسئلة التاريخية باللغة العربية."},
+                    {"role": "system", "content": "أجب على الأسئلة التاريخية باللغة العربية. كن دقيقاً ومفصلاً."},
                     {"role": "user", "content": update.message.text}
                 ]
             )
             answer = response.choices[0].message.content
             await update.message.reply_text(answer)
+        except openai.APIError as e:
+            logger.error(f"خطأ API من OpenAI في معالجة النص: {e.type} - {e.message}", exc_info=True)
+            await update.message.reply_text(f"حدث خطأ في الاتصال بـ OpenAI: {e.message}. يرجى التحقق من مفتاح API والرصيد.")
         except Exception as e:
-            logger.error(f"خطأ في معالجة النص: {e}", exc_info=True)
-            await update.message.reply_text("حدث خطأ أثناء الاتصال بـ GPT. يرجى المحاولة مرة أخرى.")
+            logger.error(f"خطأ غير متوقع في معالجة النص: {e}", exc_info=True)
+            await update.message.reply_text("حدث خطأ أثناء معالجة طلبك النصي. يرجى المحاولة مرة أخرى.")
 
     async def handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -83,12 +86,12 @@ class TreasureAnalyzerBot:
             image_base64 = base64.b64encode(photo_bytes).decode('utf-8')
 
             response = openai.chat.completions.create(
-                model="gpt-4-vision-preview",
+                model="gpt-4-vision-preview", # ****** هذا النموذج يتطلب وصولاً خاصاً / رصيداً ******
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "حلل هذه الصورة بحثًا عن دلائل آثار، كن دقيقاً ومفصلاً."},
+                            {"type": "text", "text": "حلل هذه الصورة بحثًا عن دلائل آثار، كن دقيقاً ومفصلاً. أجب باللغة العربية."},
                             {
                                 "type": "image_url",
                                 "image_url": {
@@ -101,8 +104,11 @@ class TreasureAnalyzerBot:
             )
             result = response.choices[0].message.content
             await update.message.reply_text(result)
+        except openai.APIError as e:
+            logger.error(f"خطأ API من OpenAI في معالجة الصورة: {e.type} - {e.message}", exc_info=True)
+            await update.message.reply_text(f"حدث خطأ في الاتصال بـ OpenAI لتحليل الصورة: {e.message}. يرجى التحقق من مفتاح API والرصيد ووصولك لنموذج Vision.")
         except Exception as e:
-            logger.error(f"خطأ في معالجة الصورة: {e}", exc_info=True)
+            logger.error(f"خطأ غير متوقع في معالجة الصورة: {e}", exc_info=True)
             await update.message.reply_text("تعذر تحليل الصورة. يرجى التأكد من أن الصورة واضحة أو المحاولة لاحقاً.")
 
 # هذا الجزء سيشغل البوت فقط عند تشغيل هذا الملف
@@ -112,8 +118,9 @@ if __name__ == '__main__':
         bot_instance = TreasureAnalyzerBot()
         bot_instance.bot_app = bot_instance.application_builder.build()
         bot_instance.setup_handlers()
-        bot_instance.bot_app.run_polling(poll_interval=1.0, timeout=30) # أضفت poll_interval و timeout
+        # استخدام run_polling مع poll_interval و timeout لمنع التعليق
+        bot_instance.bot_app.run_polling(poll_interval=1.0, timeout=30)
         logger.info("Telegram bot polling finished/stopped.")
     except Exception as e:
         logger.critical(f"FATAL ERROR: Could not start Telegram bot polling: {e}", exc_info=True)
-        # يمكنك إضافة كود هنا لإعادة المحاولة أو إرسال إشعار
+
