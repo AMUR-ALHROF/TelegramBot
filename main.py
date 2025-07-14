@@ -2,7 +2,7 @@ import os
 import logging
 from flask import Flask, request, abort
 import asyncio
-import threading # استيراد threading لإدارة حلقة الأحداث بشكل أفضل
+import threading
 
 # استيراد مكونات البوت الخاصة بك
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,7 +11,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes, # <--- تأكد من وجود هذا الاستيراد
+    ContextTypes,
     CallbackQueryHandler
 )
 
@@ -56,28 +56,14 @@ class TreasureHunterBot:
         self.leaderboard = LeaderboardManager(self.db_manager)
 
         # Initialize Telegram application
+        # Build the application without running it immediately
         self.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
         # Setup handlers
         self._setup_handlers()
 
-        # تهيئة التطبيق عند بناء البوت في بيئة الويب هو أمر حساس.
-        # سنجرب هذا النهج الذي يحاول تهيئة حلقة الأحداث في نفس الثريد.
-        # إذا استمرت مشكلة 'Event loop is closed' (والتي ظهرت سابقا)،
-        # قد نحتاج إلى حل أكثر تعقيدًا باستخدام run_webhook أو Threading.
-        try:
-            if not asyncio.get_event_loop().is_running():
-                asyncio.run(self.application.initialize())
-            else:
-                # إذا كانت هناك حلقة أحداث بالفعل (كما في Gunicorn)، حاول تشغيلها كـ Task
-                asyncio.create_task(self.application.initialize())
-        except RuntimeError:
-            # إذا لم تكن هناك حلقة أحداث عاملة، قم بإنشاء واحدة وتشغيل التهيئة
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.application.initialize())
-            loop.close() # أغلق الحلقة بعد التهيئة إذا لم تكن ستستخدم
-
+        # في بيئة Flask/Gunicorn مع webhooks، لا نقوم بتشغيل البوت هنا
+        # Flask سيتولى استلام الويب هوك، والتطبيق سيعالجها.
 
     def _setup_handlers(self):
         """Setup all command and message handlers"""
@@ -86,6 +72,7 @@ class TreasureHunterBot:
         # self.application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, self.photo_message_handler))
         # self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message_handler))
         # self.application.add_handler(CallbackQueryHandler(self.callback_query_handler))
+
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Sends a welcome message when the command /start is issued."""
@@ -103,29 +90,44 @@ class TreasureHunterBot:
             logger.warning("Received /start command but effective_user is None.")
             await update.message.reply_text("أهلاً بك! أنا هنا لأساعدك في رحلة البحث عن الكنوز.")
 
-
 # إنشاء كائن البوت (instance)
 bot_instance = TreasureHunterBot()
 
 # ربط Flask بالـ Webhook الخاص بـ Telegram
 @app.route('/webhook', methods=['POST'])
 async def webhook():
+    """Handle incoming webhook updates from Telegram."""
     if request.method == "POST":
         update_json = request.get_json()
         if not update_json:
             logger.warning("Received POST request without JSON data.")
-            abort(400)
+            abort(400) # Bad Request
 
         logger.info(f"Received webhook update: {update_json.get('update_id')}")
 
-        try:
-            # لم نعد بحاجة إلى استدعاء initialize هنا بعد نقله إلى __init__
-            update = Update.de_json(update_json, bot_instance.application.bot)
-            await bot_instance.application.process_update(update)
-            return 'ok'
-        except Exception as e:
-            logger.error(f"Error processing webhook update: {e}", exc_info=True)
-            abort(500)
+        # The telegram.ext.Application has its own way to handle webhooks.
+        # We need to run this in a separate thread/task because Flask is synchronous
+        # (or uses its own async model) while the bot's application uses asyncio.
+        # This function processes the update and should send replies.
+        async def process_telegram_update():
+            try:
+                # Initialize the application for this specific webhook call
+                # This should handle the 'Event loop is closed' issue by ensuring
+                # an active event loop for the duration of the update processing.
+                await bot_instance.application.initialize()
+                update = Update.de_json(update_json, bot_instance.application.bot)
+                await bot_instance.application.process_update(update)
+                # After processing, shutdown the application if not needed for subsequent updates
+                await bot_instance.application.shutdown()
+            except Exception as e:
+                logger.error(f"Error processing webhook update in async task: {e}", exc_info=True)
+
+        # Run the async processing in a separate thread or use a dedicated async handler
+        # For simplicity and to avoid event loop conflicts, we will run it in a new event loop on a separate thread.
+        # A more robust solution for high traffic would be to use a proper ASGI server or Application.run_webhook.
+        threading.Thread(target=lambda: asyncio.run(process_telegram_update())).start()
+
+        return 'ok' # Return 'ok' quickly to Telegram to avoid timeouts.
     return 'Method Not Allowed', 405
 
 @app.route('/')
