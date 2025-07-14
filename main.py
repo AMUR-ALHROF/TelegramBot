@@ -1,20 +1,20 @@
 import os
 import logging
-from flask import Flask, request, abort # أضفنا request و abort
-import asyncio # لضمان عمل العمليات غير المتزامنة بشكل صحيح
+from flask import Flask, request, abort
+import asyncio
 
 # استيراد مكونات البوت الخاصة بك
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup # <--- تأكد من وجود هذه هنا
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes, # <--- وتأكد من وجود هذه هنا
+    ContextTypes,
     CallbackQueryHandler
 )
 
-from config import Config # للتأكد من استيراد إعدادات التوكن والمفاتيح
+from config import Config
 from ai_analyzer import AIAnalyzer
 from treasure_hunter import TreasureHunterGuide
 from utils import RateLimiter, image_to_base64, format_response, escape_markdown
@@ -37,14 +37,13 @@ class TreasureHunterBot:
 
     def __init__(self):
         """Initialize the bot with required components"""
-        # Validate configuration (هذا سيضمن التحقق من وجود TELEGRAM_BOT_TOKEN و OPENAI_API_KEY)
+        # Validate configuration
         try:
             Config.validate()
             logger.info("Configuration validated successfully.")
         except ValueError as e:
             logger.critical(f"Critical configuration error: {e}")
-            # يمكنك اختيار إنهاء التطبيق هنا إذا كانت المتغيرات الأساسية مفقودة
-            # sys.exit(1) # هذه تحتاج استيراد sys
+            # sys.exit(1)
 
         # Initialize components
         self.ai_analyzer = AIAnalyzer(Config.OPENAI_API_KEY)
@@ -56,8 +55,6 @@ class TreasureHunterBot:
         self.leaderboard = LeaderboardManager(self.db_manager)
 
         # Initialize Telegram application
-        # نستخدم Application.builder().updater(None).build() لـ Webhook
-        # ثم نضبط update_queue يدوياً عند تلقي التحديثات
         self.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
         # Setup handlers
@@ -66,13 +63,11 @@ class TreasureHunterBot:
     def _setup_handlers(self):
         """Setup all command and message handlers"""
         self.application.add_handler(CommandHandler("start", self.start_command))
-        # أضف هنا باقي المعالجات (handlers) التي لديك في بوتك إذا كانت موجودة في كودك الأصلي
+        # أضف هنا باقي المعالجات (handlers) التي لديك في بوتك
         # self.application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, self.photo_message_handler))
         # self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message_handler))
         # self.application.add_handler(CallbackQueryHandler(self.callback_query_handler))
 
-    # يجب أن تكون هذه الدوال (أوامر البوت) داخل TreasureHunterBot
-    # أضف هنا جميع دوال معالجة الأوامر والرسائل التي لديك
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Sends a welcome message when the command /start is issued."""
         user = update.effective_user
@@ -95,25 +90,25 @@ bot_instance = TreasureHunterBot()
 
 # ربط Flask بالـ Webhook الخاص بـ Telegram
 @app.route('/webhook', methods=['POST'])
-async def webhook(): # يجب أن تكون دالة async لمعالجة Update.de_json و put
+async def webhook():
     if request.method == "POST":
         update_json = request.get_json()
         if not update_json:
             logger.warning("Received POST request without JSON data.")
-            abort(400) # Bad Request
+            abort(400)
 
         logger.info(f"Received webhook update: {update_json.get('update_id')}")
 
         try:
-            # قم بمعالجة التحديث باستخدام application.process_update
-            # أو إضافة التحديث إلى queue إذا كان application يعمل في حلقة حدث منفصلة
-            # في هذا الإعداد، سنستخدم process_update مباشرة
+            # هذا هو السطر الجديد الذي تم إضافته
+            await bot_instance.application.initialize()
+
             update = Update.de_json(update_json, bot_instance.application.bot)
             await bot_instance.application.process_update(update)
             return 'ok'
         except Exception as e:
             logger.error(f"Error processing webhook update: {e}", exc_info=True)
-            abort(500) # Internal Server Error
+            abort(500)
     return 'Method Not Allowed', 405
 
 @app.route('/')
@@ -121,27 +116,16 @@ def home():
     logger.info("Home route accessed. Flask is responding.")
     return "✅ خدمة الويب (Flask) تعمل بنجاح."
 
-# هذا الجزء ضروري لتشغيل تطبيق Flask بواسطة Gunicorn
-# Gunicorn سيستدعي app من هذا الملف، لذلك لا نحتاج لـ app.run هنا
 if __name__ != '__main__':
     logger.info("main.py is being imported by Gunicorn. Flask app is ready.")
-    # لا نقوم بتعيين الـ webhook هنا بشكل تلقائي مع كل بدء تشغيل
-    # لأن الطريقة الأكثر موثوقية هي تعيينه يدوياً مرة واحدة أو عبر سكريبت نشر منفصل
     pass
 
 else:
-    # هذا الجزء للتشغيل المحلي المباشر (ليس ضرورياً لـ Render)
-    # هنا سنستخدم long polling للتشغيل المحلي السهل
     logger.info("main.py is being run directly. Running bot with long polling locally.")
     async def run_local_bot():
-        # لتشغيل البوت محليًا باستخدام long polling
-        # drop_pending_updates=True يتجاهل أي تحديثات لم تتم معالجتها
         await bot_instance.application.run_polling(drop_pending_updates=True)
 
     async def main_local():
-        # تشغيل البوت بـ long polling محلياً
         await run_local_bot()
 
-    # بدء تشغيل التطبيق غير المتزامن
-    # يجب أن تتأكد أن هذا هو المكان الوحيد الذي يتم فيه تشغيل asyncio.run()
     asyncio.run(main_local())
