@@ -10,7 +10,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes,
+    ContextTypes, # <--- تأكد من وجود هذا الاستيراد
     CallbackQueryHandler
 )
 
