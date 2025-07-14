@@ -2,6 +2,7 @@ import os
 import logging
 from flask import Flask, request, abort
 import asyncio
+import threading # استيراد threading لإدارة حلقة الأحداث بشكل أفضل
 
 # استيراد مكونات البوت الخاصة بك
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -59,12 +60,24 @@ class TreasureHunterBot:
 
         # Setup handlers
         self._setup_handlers()
-        # إضافة هذا السطر: تهيئة التطبيق عند بناء البوت
-        # NOTE: Using asyncio.run in __init__ is generally discouraged in production WSGI environments
-        # because it can lead to event loop issues. However, for a simple Flask/Gunicorn setup
-        # on Render, it sometimes works as a quick fix. If this causes further issues,
-        # we will need a more robust solution for webhook handling (e.g., Application.run_webhook).
-        asyncio.run(self.application.initialize())
+
+        # تهيئة التطبيق عند بناء البوت في بيئة الويب هو أمر حساس.
+        # سنجرب هذا النهج الذي يحاول تهيئة حلقة الأحداث في نفس الثريد.
+        # إذا استمرت مشكلة 'Event loop is closed' (والتي ظهرت سابقا)،
+        # قد نحتاج إلى حل أكثر تعقيدًا باستخدام run_webhook أو Threading.
+        try:
+            if not asyncio.get_event_loop().is_running():
+                asyncio.run(self.application.initialize())
+            else:
+                # إذا كانت هناك حلقة أحداث بالفعل (كما في Gunicorn)، حاول تشغيلها كـ Task
+                asyncio.create_task(self.application.initialize())
+        except RuntimeError:
+            # إذا لم تكن هناك حلقة أحداث عاملة، قم بإنشاء واحدة وتشغيل التهيئة
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.application.initialize())
+            loop.close() # أغلق الحلقة بعد التهيئة إذا لم تكن ستستخدم
+
 
     def _setup_handlers(self):
         """Setup all command and message handlers"""
@@ -106,9 +119,7 @@ async def webhook():
         logger.info(f"Received webhook update: {update_json.get('update_id')}")
 
         try:
-            # تم إزالة هذا السطر من هنا
-            # await bot_instance.application.initialize()
-
+            # لم نعد بحاجة إلى استدعاء initialize هنا بعد نقله إلى __init__
             update = Update.de_json(update_json, bot_instance.application.bot)
             await bot_instance.application.process_update(update)
             return 'ok'
