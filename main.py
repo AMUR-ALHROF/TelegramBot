@@ -59,6 +59,12 @@ class TreasureHunterBot:
 
         # Setup handlers
         self._setup_handlers()
+        # إضافة هذا السطر: تهيئة التطبيق عند بناء البوت
+        # NOTE: Using asyncio.run in __init__ is generally discouraged in production WSGI environments
+        # because it can lead to event loop issues. However, for a simple Flask/Gunicorn setup
+        # on Render, it sometimes works as a quick fix. If this causes further issues,
+        # we will need a more robust solution for webhook handling (e.g., Application.run_webhook).
+        asyncio.run(self.application.initialize())
 
     def _setup_handlers(self):
         """Setup all command and message handlers"""
@@ -100,8 +106,8 @@ async def webhook():
         logger.info(f"Received webhook update: {update_json.get('update_id')}")
 
         try:
-            # هذا هو السطر الجديد الذي تم إضافته
-            await bot_instance.application.initialize()
+            # تم إزالة هذا السطر من هنا
+            # await bot_instance.application.initialize()
 
             update = Update.de_json(update_json, bot_instance.application.bot)
             await bot_instance.application.process_update(update)
