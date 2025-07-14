@@ -4,12 +4,13 @@ from flask import Flask, request, abort # أضفنا request و abort
 import asyncio # لضمان عمل العمليات غير المتزامنة بشكل صحيح
 
 # استيراد مكونات البوت الخاصة بك
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup # <--- تأكد من وجود هذه هنا
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     filters,
+    ContextTypes, # <--- وتأكد من وجود هذه هنا
     CallbackQueryHandler
 )
 
@@ -43,7 +44,7 @@ class TreasureHunterBot:
         except ValueError as e:
             logger.critical(f"Critical configuration error: {e}")
             # يمكنك اختيار إنهاء التطبيق هنا إذا كانت المتغيرات الأساسية مفقودة
-            # sys.exit(1)
+            # sys.exit(1) # هذه تحتاج استيراد sys
 
         # Initialize components
         self.ai_analyzer = AIAnalyzer(Config.OPENAI_API_KEY)
@@ -65,7 +66,7 @@ class TreasureHunterBot:
     def _setup_handlers(self):
         """Setup all command and message handlers"""
         self.application.add_handler(CommandHandler("start", self.start_command))
-        # أضف هنا باقي المعالجات (handlers) التي لديك في بوتك
+        # أضف هنا باقي المعالجات (handlers) التي لديك في بوتك إذا كانت موجودة في كودك الأصلي
         # self.application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, self.photo_message_handler))
         # self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message_handler))
         # self.application.add_handler(CallbackQueryHandler(self.callback_query_handler))
@@ -122,49 +123,11 @@ def home():
 
 # هذا الجزء ضروري لتشغيل تطبيق Flask بواسطة Gunicorn
 # Gunicorn سيستدعي app من هذا الملف، لذلك لا نحتاج لـ app.run هنا
-# ونحتاج فقط لتعيين الـ webhook عند بدء التطبيق
 if __name__ != '__main__':
     logger.info("main.py is being imported by Gunicorn. Flask app is ready.")
-    # عند بدء Gunicorn، قم بتعيين الويب هوك مرة واحدة فقط
-    # تأكد من أن هذا يتم مرة واحدة فقط عند بدء تشغيل الخادم
-    async def set_webhook_on_startup():
-        webhook_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME") # Render يوفر هذا المتغير
-        if webhook_url:
-            full_webhook_url = f"https://{webhook_url}/webhook" # /webhook هو المسار الذي حددناه
-            logger.info(f"Attempting to set webhook to: {full_webhook_url}")
-            try:
-                await bot_instance.application.bot.set_webhook(url=full_webhook_url)
-                logger.info("Webhook set successfully.")
-                # يمكنك إضافة استدعاء لـ getWebhookInfo هنا للتحقق الفوري
-                info = await bot_instance.application.bot.get_webhook_info()
-                logger.info(f"Webhook info after setting: {info.to_dict()}")
-            except Exception as e:
-                logger.error(f"Failed to set webhook: {e}", exc_info=True)
-        else:
-            logger.warning("RENDER_EXTERNAL_HOSTNAME environment variable not found. Webhook may not be set.")
-
-    # قم بتشغيل دالة تعيين الويب هوك عند بدء تشغيل Gunicorn
-    # هذا يتطلب تشغيل حدث asyncio.run أو loop.run_until_complete
-    # ولكن الطريقة الأبسط هي جعل Gunicorn يستدعي Flask app، والفلاك يتولى الويب هوك
-    # سنستخدم طريقة بسيطة لضمان تشغيل الـ webhook عند بدء الخدمة.
-    # يمكننا إضافة ذلك في دالة start_command أو في __init__ للـ TreasureHunterBot
-    # ولكن لضمان أنها تعمل عند بدء Gunicorn، سنفعلها كـ background task
-    # Note: This is a simplified approach. For robust webhook management in production
-    # you might want to use a separate script or a dedicated webhook setup endpoint.
-
-    # لتشغيل الكود غير المتزامن عند بدء التشغيل، نحتاج إلى Event Loop.
-    # بما أن gunicorn يشغل Flask، يمكننا استخدام thread pool لتشغيل الـ async code
-    # أو ببساطة ترك تعيين الـ webhook يدوياً أولاً.
-    # الطريقة الأكثر شيوعاً هي تعيين الـ webhook مرة واحدة فقط عند النشر يدوياً أو عبر GitHub Action.
-    # ولكن إذا كنت تريده أن يُعيّن في كل مرة يبدأ فيها الخادم:
-    # سيتم تشغيل هذا الكود عندما يتم استيراد main.py بواسطة gunicorn
-    # تأكد من أنك تستخدم python-telegram-bot v20.x+ التي تدعم async/await
-
-    # لا يمكن استدعاء asyncio.run() مباشرة هنا لأن gunicorn يدير الـ event loop الخاص به
-    # الأفضل هو تعيين الويب هوك يدوياً أو عند أول طلب للروت /
-    # أو يمكنك استخدام مكتبة مثل aiohttp مع Flask إذا كنت تريد تعيين ويب هوك async عند البدء
-    # للطريقة المبسطة: تأكد من أن الويب هوك يتم تعيينه يدوياً أو عن طريق تشغيل سكريبت منفصل مرة واحدة.
-    pass # لا تفعل شيئاً هنا، gunicorn سيتولى تشغيل Flask
+    # لا نقوم بتعيين الـ webhook هنا بشكل تلقائي مع كل بدء تشغيل
+    # لأن الطريقة الأكثر موثوقية هي تعيينه يدوياً مرة واحدة أو عبر سكريبت نشر منفصل
+    pass
 
 else:
     # هذا الجزء للتشغيل المحلي المباشر (ليس ضرورياً لـ Render)
@@ -172,19 +135,13 @@ else:
     logger.info("main.py is being run directly. Running bot with long polling locally.")
     async def run_local_bot():
         # لتشغيل البوت محليًا باستخدام long polling
+        # drop_pending_updates=True يتجاهل أي تحديثات لم تتم معالجتها
         await bot_instance.application.run_polling(drop_pending_updates=True)
 
-    # تشغيل Flask app (الذي سيستمع على المسار /)
-    # وتشغيل البوت في نفس الوقت (إذا لم تكن تستخدم webhooks محلياً)
-    # يمكننا تشغيل الاثنين معاً باستخدام asyncio.gather
     async def main_local():
-        # تشغيل Flask في Event Loop الخاص به (ليس مثالياً، لكن لغرض التوضيح)
-        # أو يمكن تشغيل Flask بشكل منفصل وترك البوت يعمل بـ long polling
-        # للحصول على setup كامل مع webhook محلياً، ستحتاج إلى ngrok أو ما شابه
-        # ولكن بما أن الهدف هو Render (webhook)، فإن هذا الجزء هو فقط للتجربة المحلية
-        await run_local_bot() # قم بتشغيل البوت بـ long polling محلياً
+        # تشغيل البوت بـ long polling محلياً
+        await run_local_bot()
 
     # بدء تشغيل التطبيق غير المتزامن
     # يجب أن تتأكد أن هذا هو المكان الوحيد الذي يتم فيه تشغيل asyncio.run()
-    # لتشغيل flask مع gunicorn لا تحتاج الى asyncio.run في هذا السياق
     asyncio.run(main_local())
