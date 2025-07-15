@@ -1,8 +1,9 @@
 import os
 import logging
-from flask import Flask, request, abort
 import asyncio
-import threading # لم نعد بحاجة لها بنفس الطريقة، لكن يمكن إبقاؤها إذا كانت هناك استخدامات أخرى
+
+# لا نحتاج لاستيراد Flask إذا لم نستخدمه كخادم ويب أساسي
+# from flask import Flask, request, abort
 
 # استيراد مكونات البوت الخاصة بك
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,6 +15,7 @@ from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler
 )
+from telegram.constants import ParseMode # تأكد من استيراد ParseMode
 
 from config import Config
 from ai_analyzer import AIAnalyzer
@@ -28,9 +30,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# تهيئة تطبيق Flask
-app = Flask(__name__)
 
 # تهيئة البوت ومكوناته
 class TreasureHunterBot:
@@ -56,6 +55,7 @@ class TreasureHunterBot:
         self.leaderboard = LeaderboardManager(self.db_manager)
 
         # Initialize Telegram application
+        # لـ Webhook، لا نحدد updater هنا، بل نستخدم run_webhook لاحقًا
         self.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
         # Setup handlers
@@ -166,77 +166,43 @@ class TreasureHunterBot:
                     "1️⃣  **صورة** لمكان أو علامة تعتقد أنها قد تكون مرتبطة بكنز.\n"
                     "2️⃣  **وصف نصي** للمكان أو العلامة أو أي معلومات لديك.\n\n"
                     "سأقوم بتحليل المعلومات وتقديم الإرشادات.",
-                    parse_mode="Markdown"
+                    parse_mode=ParseMode.MARKDOWN
                 )
         except Exception as e:
             logger.error(f"Error processing callback query from user {user.id}: {e}", exc_info=True)
             await query.edit_message_text(text="عذراً، حدث خطأ أثناء معالجة طلبك.")
 
-
 # إنشاء كائن البوت (instance)
 bot_instance = TreasureHunterBot()
+application = bot_instance.application # اختصار للوصول إلى Application object
 
-# ربط Flask بالـ Webhook الخاص بـ Telegram
-# هذا هو التغيير الجوهري: استخدام Application.run_webhook
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Handle incoming webhook updates from Telegram via PTB's run_webhook."""
-    if not bot_instance.application.updater.webhook_server:
-        logger.error("Webhook server not initialized for the application.")
-        abort(500)
-
-    # PTB's run_webhook will handle the update processing and return the response.
-    # We pass the Flask request data directly to PTB's webhook handler.
-    try:
-        await bot_instance.application.updater.webhook_server.process_update(request.get_json(force=True))
-        return 'ok' # Return 'ok' to Telegram quickly
-    except Exception as e:
-        logger.error(f"Error processing webhook update via PTB's webhook_server: {e}", exc_info=True)
-        abort(500)
-
-@app.route('/')
-def home():
-    logger.info("Home route accessed. Flask is responding.")
-    return "✅ خدمة الويب (Flask) تعمل بنجاح."
-
-# إعداد Webhook في بداية تشغيل Gunicorn (فقط في بيئة الإنتاج)
-def setup_webhook():
-    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if webhook_url:
-        full_webhook_url = f"{webhook_url}/webhook"
-        logger.info(f"Setting webhook to: {full_webhook_url}")
-        async def set_webhook_async():
-            try:
-                # نحتاج إلى تهيئة التطبيق قبل ضبط الويب هوك
-                await bot_instance.application.initialize()
-                # ضبط الويب هوك
-                await bot_instance.application.bot.set_webhook(url=full_webhook_url)
-                logger.info("Webhook successfully set!")
-            except Exception as e:
-                logger.error(f"Failed to set webhook: {e}", exc_info=True)
-            finally:
-                # إيقاف التطبيق بعد ضبط الويب هوك لمنع استهلاك الموارد إذا لم يكن يستخدم لل polling
-                await bot_instance.application.shutdown()
-        
-        # تشغيل الدالة غير المتزامنة لضبط الويب هوك في حلقة أحداث خاصة بها
-        # هذا يضمن أن يتم ضبط الويب هوك مرة واحدة عند بدء تشغيل Gunicorn
-        threading.Thread(target=lambda: asyncio.run(set_webhook_async())).start()
+# نقطة الدخول الرئيسية للخدمة (في Render)
+if __name__ == '__main__':
+    # الحصول على الـ URL الخارجي من متغيرات بيئة Render
+    WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL")
+    if not WEBHOOK_URL:
+        logger.critical("RENDER_EXTERNAL_URL environment variable not set. Cannot run webhook.")
+        # Fallback to local polling if URL is not set (for local development)
+        logger.info("Running bot with long polling locally as RENDER_EXTERNAL_URL is not set.")
+        async def run_local_bot():
+            await application.run_polling(drop_pending_updates=True)
+        asyncio.run(run_local_bot())
     else:
-        logger.warning("RENDER_EXTERNAL_URL not found. Webhook will not be set automatically.")
+        # هذه هي الطريقة الصحيحة لتشغيل البوت بـ Webhook في الإنتاج
+        logger.info(f"Starting webhook for Telegram Bot at {WEBHOOK_URL}/webhook")
+        # يجب أن يكون المنفذ هو 10000 في Render
+        PORT = int(os.environ.get("PORT", 10000))
 
-# نقطة الدخول لتطبيق Gunicorn
-if __name__ != '__main__':
-    logger.info("main.py is being imported by Gunicorn. Flask app is ready.")
-    # عند تشغيل Gunicorn، قم بإعداد الويب هوك
-    setup_webhook()
-    pass # Flask app (app) will be served by Gunicorn
-
+        # تشغيل الويب هوك. Application.run_webhook تتولى كل شيء (HTTP Server, Event Loop)
+        # وهذا يحل مشكلة "Event loop is closed"
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="webhook", # المسار الذي ستستقبل عليه التحديثات
+            webhook_url=f"{WEBHOOK_URL}/webhook" # الـ URL الكامل للـ Webhook
+        )
 else:
-    logger.info("main.py is being run directly. Running bot with long polling locally.")
-    async def run_local_bot():
-        await bot_instance.application.run_polling(drop_pending_updates=True)
-
-    async def main_local():
-        await run_local_bot()
-
-    asyncio.run(main_local())
+    # هذا الجزء ليس مطلوباً لـ Render إذا استخدمنا 'python main.py' كأمر تشغيل
+    # ولكن يمكن إبقاؤه لأي استخدامات مستقبلية حيث يتم استيراد main.py كوحدة
+    logger.info("main.py is being imported. This path is for non-direct execution (e.g., specific WSGI/ASGI servers).")
+    pass
