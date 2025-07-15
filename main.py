@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 
-# لا نحتاج لاستيراد Flask إذا لم نستخدمه كخادم ويب أساسي
+# لا نحتاج لاستيراد Flask أو request أو abort إذا لم نستخدم Flask كخادم ويب أساسي
 # from flask import Flask, request, abort
 
 # استيراد مكونات البوت الخاصة بك
