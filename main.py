@@ -2,7 +2,7 @@ import os
 import logging
 from flask import Flask, request, abort
 import asyncio
-import threading
+import threading # لم نعد بحاجة لها بنفس الطريقة، لكن يمكن إبقاؤها إذا كانت هناك استخدامات أخرى
 
 # استيراد مكونات البوت الخاصة بك
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -44,7 +44,7 @@ class TreasureHunterBot:
             logger.info("Configuration validated successfully.")
         except ValueError as e:
             logger.critical(f"Critical configuration error: {e}")
-            # sys.exit(1)
+            # sys.exit(1) # يمكن تفعيل هذا للخروج المبكر إذا كانت هناك أخطاء حرجة في التكوين
 
         # Initialize components
         self.ai_analyzer = AIAnalyzer(Config.OPENAI_API_KEY)
@@ -60,18 +60,6 @@ class TreasureHunterBot:
 
         # Setup handlers
         self._setup_handlers()
-
-        # تهيئة التطبيق عند بناء البوت في بيئة الويب
-        try:
-            if not asyncio.get_event_loop().is_running():
-                asyncio.run(self.application.initialize())
-            else:
-                asyncio.create_task(self.application.initialize())
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.application.initialize())
-            loop.close()
 
     def _setup_handlers(self):
         """Setup all command and message handlers"""
@@ -97,9 +85,6 @@ class TreasureHunterBot:
             logger.warning("Received /start command but effective_user is None.")
             await update.message.reply_text("أهلاً بك! أنا هنا لأساعدك في رحلة البحث عن الكنوز.")
 
-    # ** يجب أن تكون هذه الدوال موجودة لديك في ملف main.py أو في ملفات أخرى مستوردة **
-    # ** إذا لم تكن موجودة أو فارغة، سيؤدي ذلك إلى أخطاء (AttributeError). **
-
     async def photo_message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handles incoming photo messages."""
         user = update.effective_user
@@ -114,18 +99,12 @@ class TreasureHunterBot:
             return
 
         try:
-            # افتراض أن الصورة هي الأكبر جودة
             file_id = update.message.photo[-1].file_id
             new_file = await context.bot.get_file(file_id)
-            # استخدام path وليس file_path لأنه Render قد يتطلب مسار محلي
-            # أو تحميل مباشر للبيانات إذا كان الحجم كبيرا
-            # For simplicity, let's assume get_file provides a direct download URL
             image_url = new_file.file_path
             logger.info(f"Downloading image from: {image_url}")
 
-            # يجب أن تقوم دالة image_to_base64 بتحميل الصورة من الـ URL
-            # وتحويلها إلى Base64
-            base64_image = await asyncio.to_thread(image_to_base64, image_url) # استخدام asyncio.to_thread إذا كانت دالة image_to_base64 متزامنة
+            base64_image = await asyncio.to_thread(image_to_base64, image_url)
 
             if not base64_image:
                 await update.message.reply_text("عذراً، لم أستطع معالجة الصورة.")
@@ -133,17 +112,14 @@ class TreasureHunterBot:
 
             await update.message.reply_text("جاري تحليل الصورة... يرجى الانتظار.")
 
-            # تحليل الصورة
             analysis_result = await self.ai_analyzer.analyze_image_for_treasure(base64_image)
 
-            # تنسيق وإرسال الرد
             response_text = format_response(analysis_result)
             await update.message.reply_markdown_v2(response_text)
 
         except Exception as e:
             logger.error(f"Error processing photo from user {user.id}: {e}", exc_info=True)
             await update.message.reply_text("عذراً، حدث خطأ أثناء معالجة الصورة.")
-
 
     async def text_message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handles incoming text messages."""
@@ -162,10 +138,8 @@ class TreasureHunterBot:
         try:
             await update.message.reply_text("جاري معالجة طلبك... يرجى الانتظار.")
 
-            # تحليل النص
             analysis_result = await self.ai_analyzer.analyze_text_for_treasure(text)
 
-            # تنسيق وإرسال الرد
             response_text = format_response(analysis_result)
             await update.message.reply_markdown_v2(response_text)
 
@@ -183,7 +157,6 @@ class TreasureHunterBot:
 
         logger.info(f"Received callback query '{query.data}' from user: {user.id} ({user.full_name})")
 
-        # Always answer callback queries, even if just an empty one
         await query.answer()
 
         try:
@@ -195,9 +168,6 @@ class TreasureHunterBot:
                     "سأقوم بتحليل المعلومات وتقديم الإرشادات.",
                     parse_mode="Markdown"
                 )
-            # يمكنك إضافة المزيد من حالات query.data هنا
-            # elif query.data == "another_action":
-            #     await query.edit_message_text(text="Executing another action...")
         except Exception as e:
             logger.error(f"Error processing callback query from user {user.id}: {e}", exc_info=True)
             await query.edit_message_text(text="عذراً، حدث خطأ أثناء معالجة طلبك.")
@@ -207,33 +177,59 @@ class TreasureHunterBot:
 bot_instance = TreasureHunterBot()
 
 # ربط Flask بالـ Webhook الخاص بـ Telegram
+# هذا هو التغيير الجوهري: استخدام Application.run_webhook
 @app.route('/webhook', methods=['POST'])
 async def webhook():
-    """Handle incoming webhook updates from Telegram."""
-    if request.method == "POST":
-        update_json = request.get_json()
-        if not update_json:
-            logger.warning("Received POST request without JSON data.")
-            abort(400) # Bad Request
+    """Handle incoming webhook updates from Telegram via PTB's run_webhook."""
+    if not bot_instance.application.updater.webhook_server:
+        logger.error("Webhook server not initialized for the application.")
+        abort(500)
 
-        logger.info(f"Received webhook update: {update_json.get('update_id')}")
-
-        # Run the async processing in a separate thread to avoid Flask's event loop conflicts
-        threading.Thread(target=lambda: asyncio.run(bot_instance.application.process_update(
-            Update.de_json(update_json, bot_instance.application.bot)
-        ))).start()
-
-        return 'ok' # Return 'ok' quickly to Telegram to avoid timeouts.
-    return 'Method Not Allowed', 405
+    # PTB's run_webhook will handle the update processing and return the response.
+    # We pass the Flask request data directly to PTB's webhook handler.
+    try:
+        await bot_instance.application.updater.webhook_server.process_update(request.get_json(force=True))
+        return 'ok' # Return 'ok' to Telegram quickly
+    except Exception as e:
+        logger.error(f"Error processing webhook update via PTB's webhook_server: {e}", exc_info=True)
+        abort(500)
 
 @app.route('/')
 def home():
     logger.info("Home route accessed. Flask is responding.")
     return "✅ خدمة الويب (Flask) تعمل بنجاح."
 
+# إعداد Webhook في بداية تشغيل Gunicorn (فقط في بيئة الإنتاج)
+def setup_webhook():
+    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if webhook_url:
+        full_webhook_url = f"{webhook_url}/webhook"
+        logger.info(f"Setting webhook to: {full_webhook_url}")
+        async def set_webhook_async():
+            try:
+                # نحتاج إلى تهيئة التطبيق قبل ضبط الويب هوك
+                await bot_instance.application.initialize()
+                # ضبط الويب هوك
+                await bot_instance.application.bot.set_webhook(url=full_webhook_url)
+                logger.info("Webhook successfully set!")
+            except Exception as e:
+                logger.error(f"Failed to set webhook: {e}", exc_info=True)
+            finally:
+                # إيقاف التطبيق بعد ضبط الويب هوك لمنع استهلاك الموارد إذا لم يكن يستخدم لل polling
+                await bot_instance.application.shutdown()
+        
+        # تشغيل الدالة غير المتزامنة لضبط الويب هوك في حلقة أحداث خاصة بها
+        # هذا يضمن أن يتم ضبط الويب هوك مرة واحدة عند بدء تشغيل Gunicorn
+        threading.Thread(target=lambda: asyncio.run(set_webhook_async())).start()
+    else:
+        logger.warning("RENDER_EXTERNAL_URL not found. Webhook will not be set automatically.")
+
+# نقطة الدخول لتطبيق Gunicorn
 if __name__ != '__main__':
     logger.info("main.py is being imported by Gunicorn. Flask app is ready.")
-    pass
+    # عند تشغيل Gunicorn، قم بإعداد الويب هوك
+    setup_webhook()
+    pass # Flask app (app) will be served by Gunicorn
 
 else:
     logger.info("main.py is being run directly. Running bot with long polling locally.")
