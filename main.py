@@ -1,5 +1,7 @@
 import logging
 import os
+import json
+from datetime import datetime, timedelta
 from telegram import Update, InputMediaPhoto
 from telegram.ext import (
     Application,
@@ -14,9 +16,8 @@ import requests
 from io import BytesIO
 from PIL import Image
 import base64
+
 from database import DatabaseManager  # تأكد من وجود ملف database.py
-import json # لإضافة التعامل مع JSON
-from datetime import datetime, timedelta
 
 # تحميل متغيرات البيئة من ملف .env
 load_dotenv()
@@ -31,13 +32,21 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # تهيئة OpenAI API
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    logger.critical("OPENAI_API_KEY environment variable is not set. Exiting.")
+    exit(1) # إنهاء التطبيق إذا لم يكن المفتاح موجوداً
+openai_client = OpenAI(api_key=openai_api_key)
 
 # تهيئة مدير قاعدة البيانات
-db_manager = DatabaseManager(os.getenv("DATABASE_URL"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    logger.critical("DATABASE_URL environment variable is not set. Exiting.")
+    exit(1) # إنهاء التطبيق إذا لم يكن الرابط موجوداً
+# DEBUG: لطباعة رابط قاعدة البيانات للتأكد من أنه صحيح
+logger.info(f"DEBUG: Attempting to connect to DB: {DATABASE_URL.split('@')[-1]}") # لا تطبع كلمة المرور كاملة
 
-# قائمة المستخدمين المسجلين (لأغراض بسيطة، يمكن استبدالها بقاعدة بيانات لاحقًا)
-# registered_users = set() # لم نعد نستخدم هذه القائمة بعد وجود قاعدة البيانات
+db_manager = DatabaseManager(DATABASE_URL)
 
 # رسالة الترحيب الأولى للمستخدمين الجدد
 WELCOME_MESSAGE = (
@@ -52,31 +61,35 @@ MAX_FREE_REQUESTS = 5
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    user_data = db_manager.get_user(user_id)
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    last_name = update.effective_user.last_name if update.effective_user.last_name else None
 
-    if not user_data:
-        # مستخدم جديد، قم بإضافته إلى قاعدة البيانات
-        db_manager.add_user(user_id, update.effective_user.username or update.effective_user.first_name)
-        await update.message.reply_text(WELCOME_MESSAGE)
-        logger.info(f"New user registered: {user_id}")
-    else:
-        # مستخدم موجود، أرسل له رسالة ترحيبية
-        await update.message.reply_text(WELCOME_MESSAGE)
-        logger.info(f"Existing user accessed: {user_id}")
+    # استخدام get_or_create_user لضمان وجود المستخدم
+    user_data = db_manager.get_or_create_user(user_id, username, first_name, last_name)
+
+    await update.message.reply_text(WELCOME_MESSAGE)
+    logger.info(f"User {user_id} accessed: (newly created or existing)")
 
 # دالة للتحقق من عدد الطلبات المجانية المتبقية
 def check_request_limit(user_id: int) -> tuple[bool, int]:
-    user_data = db_manager.get_user(user_id)
+    # استخدام get_user_by_telegram_id لأننا نتوقع أن المستخدم موجود بالفعل
+    user_data = db_manager.get_user_by_telegram_id(user_id)
     if not user_data:
-        return False, MAX_FREE_REQUESTS # يجب ألا يحدث هذا إذا كان المستخدم مسجلاً
+        logger.error(f"User {user_id} not found in database during request limit check.")
+        # يمكن هنا توجيه المستخدم إلى /start إذا لم يتم العثور عليه
+        return False, 0
 
     last_request_date = user_data.last_request_date
     requests_count = user_data.requests_count
 
     # إذا كان اليوم مختلفًا عن آخر طلب، أعد تعيين العدد
-    if last_request_date.date() != datetime.now().date():
+    # استخدام datetime.utcnow() للحصول على الوقت العالمي المنسق (UTC)
+    # ليتوافق مع طريقة تخزين التاريخ في قاعدة البيانات (func.now())
+    if last_request_date.date() != datetime.utcnow().date():
         requests_count = 0
-        db_manager.update_user_requests(user_id, requests_count, datetime.now())
+        db_manager.update_user_requests(user_id, requests_count, datetime.utcnow())
+        logger.info(f"User {user_id} daily request count reset.")
 
     if requests_count < MAX_FREE_REQUESTS:
         return True, MAX_FREE_REQUESTS - requests_count
@@ -218,12 +231,12 @@ def main() -> None:
     if not TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in environment variables.")
 
-    # تهيئة التطبيق باستخدام الويب هوكس
+    # تهيئة التطبيق
     application = Application.builder().token(TOKEN).build()
 
     # تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة)
-    db_manager.create_tables()
-    logger.info("Database tables checked/created.")
+    # db_manager.create_tables() # يتم استدعاؤها في __init__ لـ DatabaseManager
+    # logger.info("Database tables checked/created.") # تم نقل هذه الرسالة إلى DatabaseManager
 
     # إضافة المعالجات (Handlers)
     application.add_handler(CommandHandler("start", start))
@@ -233,16 +246,16 @@ def main() -> None:
     # إضافة معالج الأخطاء
     application.add_error_handler(error_handler)
 
-    # تشغيل البوت باستخدام الويب هوكس
-    PORT = int(os.environ.get("PORT", "8080")) # يستخدم المنفذ 8080 افتراضياً أو المتوفر
-    WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # هذا يجب أن يكون رابط خدمة Render الخاص بك
+    # تشغيل البوت باستخدام الويب هوكس أو الاستقصاء
+    PORT = int(os.environ.get("PORT", "8080")) # Render.com يوفر هذا المتغير
+    WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # رابط خدمة Render الخاص بك
 
     if not WEBHOOK_URL:
-        logger.error("WEBHOOK_URL environment variable is not set. Webhook will not be configured.")
-        # إذا لم يتم تعيين WEBHOOK_URL، يمكنك محاولة التشغيل في وضع الاستقصاء (Polling)
-        # لكن Render يتطلب Webhooks لتطبيقات الويب
+        logger.error("WEBHOOK_URL environment variable is not set. Attempting to run in Polling mode.")
+        # تشغيل في وضع الاستقصاء (Polling) - قد لا يعمل بشكل جيد على Render.com
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     else:
+        logger.info(f"Running in Webhook mode. WEBHOOK_URL: {WEBHOOK_URL}, PORT: {PORT}")
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
