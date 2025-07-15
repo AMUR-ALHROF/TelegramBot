@@ -55,11 +55,13 @@ class TreasureHunterBot:
         self.leaderboard = LeaderboardManager(self.db_manager)
 
         # Initialize Telegram application
-        # لـ Webhook، لا نحدد updater هنا، بل نستخدم run_webhook لاحقًا
         self.application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
         # Setup handlers
         self._setup_handlers()
+
+        # *** تم إزالة منطق initialize() من هنا ***
+        # سيتم تهيئة التطبيق تلقائيًا عند تشغيل run_webhook()
 
     def _setup_handlers(self):
         """Setup all command and message handlers"""

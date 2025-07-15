@@ -1,9 +1,7 @@
-Openai>=1.0.0
+openai>=1.0.0
 python-telegram-bot>=20.0
 pillow>=11.2.0
 requests>=2.25.0
-Flask[async]>=2.0.0  # هذا هو التعديل المطلوب
-gunicorn>=20.0.0
 python-dotenv>=1.0.0
 psycopg2-binary>=2.9.0
 sqlalchemy>=2.0.0
