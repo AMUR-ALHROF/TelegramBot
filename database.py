@@ -14,6 +14,8 @@ class User(Base):
     invite_code = Column(String, unique=True)
     inviter_id = Column(Integer, default=None)
     invited_friends = Column(Integer, default=0)
+    username = Column(String)  # ✅ تمت الإضافة
+    first_name = Column(String)  # ✅ تمت الإضافة
 
 class Achievement(Base):
     __tablename__ = 'achievements'
@@ -41,6 +43,20 @@ class DatabaseManager:
             {"name": "دعوة أول صديق", "condition": lambda user: user.invited_friends >= 1},
             {"name": "دعوة 5 أصدقاء", "condition": lambda user: user.invited_friends >= 5},
         ]
+
+    def get_or_create_user(self, user_id, username=None, first_name=None):
+        session = self.Session()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if not user:
+            user = User(
+                user_id=user_id,
+                username=username,
+                first_name=first_name
+            )
+            session.add(user)
+            session.commit()
+        session.close()
+        return user
 
     def get_user(self, user_id):
         session = self.Session()
