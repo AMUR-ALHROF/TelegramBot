@@ -10,41 +10,45 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from dotenv import load_dotenv
 from openai import OpenAI
-import requests
 from io import BytesIO
-from PIL import Image
 import base64
 
 from database import DatabaseManager
 
-# تحميل متغيرات البيئة من .env
-load_dotenv()
-
-# تسجيل الأخطاء والمعلومات
+# إعدادات التسجيل (Logging)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
-# مفاتيح API
+# تحميل متغيرات البيئة من نظام التشغيل مباشرة (Render لا يستخدم .env)
 openai_api_key = os.getenv("OPENAI_API_KEY")
 telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", "8080"))
+PORT = int(os.environ.get("PORT", "8080"))
 
-if not openai_api_key or not telegram_token or not DATABASE_URL or not WEBHOOK_URL:
-    logger.critical("Environment variables missing. Please check .env or Render settings.")
+# فحص المتغيرات المطلوبة
+missing_vars = []
+if not openai_api_key:
+    missing_vars.append("OPENAI_API_KEY")
+if not telegram_token:
+    missing_vars.append("TELEGRAM_BOT_TOKEN")
+if not DATABASE_URL:
+    missing_vars.append("DATABASE_URL")
+if not WEBHOOK_URL:
+    missing_vars.append("WEBHOOK_URL")
+
+if missing_vars:
+    logger.critical(f"Missing environment variables: {', '.join(missing_vars)}. Please set them in Render's dashboard.")
     exit(1)
 
-# إعداد OpenAI
+# تهيئة OpenAI و قاعدة البيانات
 openai_client = OpenAI(api_key=openai_api_key)
-
-# قاعدة البيانات
 db_manager = DatabaseManager(DATABASE_URL)
 
 # رسالة الترحيب
@@ -61,32 +65,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     db_manager.get_or_create_user(user.id, user.username, user.first_name, user.last_name)
     await update.message.reply_text(WELCOME_MESSAGE)
-    logger.info(f"User {user.id} started the bot.")
 
 def check_request_limit(user_id: int) -> tuple[bool, int]:
-    user = db_manager.get_user_by_telegram_id(user_id)
-    if not user:
+    user_data = db_manager.get_user_by_telegram_id(user_id)
+    if not user_data:
         return False, 0
-    if user.last_request_date.date() != datetime.utcnow().date():
+
+    last_date = user_data.last_request_date
+    count = user_data.requests_count
+
+    if last_date.date() != datetime.utcnow().date():
         db_manager.update_user_requests(user_id, 0, datetime.utcnow())
         return True, MAX_FREE_REQUESTS
-    if user.requests_count < MAX_FREE_REQUESTS:
-        return True, MAX_FREE_REQUESTS - user.requests_count
-    return False, 0
+    return (count < MAX_FREE_REQUESTS), (MAX_FREE_REQUESTS - count)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     is_allowed, remaining = check_request_limit(user_id)
+
     if not is_allowed:
-        await update.message.reply_text(f"عذرًا، لقد استنفدت ({MAX_FREE_REQUESTS}) طلبًا اليوم. أعد المحاولة غدًا.")
+        await update.message.reply_text("لقد استنفدت طلباتك المجانية لهذا اليوم. حاول غدًا.")
         return
+
     db_manager.increment_user_requests(user_id)
-    photo_file = await update.message.photo[-1].get_file()
-    photo_bytes = BytesIO()
-    await photo_file.download_to_memory(photo_bytes)
-    photo_bytes.seek(0)
-    base64_image = base64.b64encode(photo_bytes.read()).decode("utf-8")
-    await update.message.reply_text("جارٍ تحليل الصورة...")
+    await update.message.reply_text("تلقيت الصورة، جارٍ التحليل...")
+
+    photo = await update.message.photo[-1].get_file()
+    bio = BytesIO()
+    await photo.download_to_memory(bio)
+    bio.seek(0)
+    base64_image = base64.b64encode(bio.read()).decode("utf-8")
+
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o",
@@ -94,7 +103,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "ما هذا النقش؟ صفه بالتفصيل... وأجب بصيغة JSON فقط، مع الحقول (وصف_النقش، الحضارة، المعنى، هل_يوجد_كنوز، نصائح_إضافية)."},
+                        {"type": "text", "text": "ما هذا النقش؟ صفه بالتفصيل، وما هي الحضارة التي ينتمي إليها؟ وما هو معناه؟ وهل يوجد كنوز حوله؟ أجب بصيغة JSON فقط، مع حقول (وصف_النقش، الحضارة، المعنى، هل_يوجد_كنوز، نصائح_إضافية)."},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
@@ -104,63 +113,69 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ],
             max_tokens=1000,
         )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```json"):
-            raw = raw[len("```json"):].strip()
-        if raw.endswith("```"):
-            raw = raw[:-3].strip()
-        data = json.loads(raw)
-        reply = (
+
+        content = response.choices[0].message.content.strip()
+        if content.startswith("```json"):
+            content = content[len("```json"):].strip()
+        if content.endswith("```"):
+            content = content[:-3].strip()
+
+        data = json.loads(content)
+        msg = (
             f"✨ **تحليل النقش:** ✨\n\n"
-            f"📜 **وصف:** {data.get('وصف_النقش', 'لا يوجد')}\n"
-            f"🏛️ **الحضارة:** {data.get('الحضارة', 'غير معروفة')}\n"
-            f"🔍 **المعنى:** {data.get('المعنى', 'غير واضح')}\n"
-            f"💰 **هل يوجد كنوز؟** {data.get('هل_يوجد_كنوز', 'غير مؤكد')}\n"
-            f"💡 **نصائح:** {data.get('نصائح_إضافية', 'لا شيء')}"
+            f"📜 **وصف النقش:** {data.get('وصف_النقش', 'غير متوفر')}\n\n"
+            f"🏛️ **الحضارة:** {data.get('الحضارة', 'غير معروفة')}\n\n"
+            f"🔍 **المعنى:** {data.get('المعنى', 'لا يمكن تحديده')}\n\n"
+            f"💰 **هل يوجد كنوز:** {data.get('هل_يوجد_كنوز', 'غير مؤكد')}\n\n"
+            f"💡 **نصائح إضافية:** {data.get('نصائح_إضافية', 'لا شيء')}"
         )
-        await update.message.reply_text(reply, parse_mode='Markdown')
+        await update.message.reply_text(msg, parse_mode='Markdown')
+
     except Exception as e:
-        logger.error(f"Photo error: {e}")
-        await update.message.reply_text("حدث خطأ أثناء تحليل الصورة. جرب مجددًا لاحقًا.")
+        logger.error(f"AI error: {e}")
+        await update.message.reply_text("حدث خطأ أثناء تحليل الصورة، يرجى المحاولة مجددًا.")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    text = update.message.text
     is_allowed, remaining = check_request_limit(user_id)
+
     if not is_allowed:
-        await update.message.reply_text(f"عذرًا، لقد استنفدت ({MAX_FREE_REQUESTS}) طلبًا اليوم. أعد المحاولة غدًا.")
+        await update.message.reply_text("لقد استنفدت طلباتك المجانية لهذا اليوم. حاول غدًا.")
         return
+
     db_manager.increment_user_requests(user_id)
-    await update.message.reply_text("جارٍ البحث عن إجابة...")
+    await update.message.reply_text("جارٍ معالجة سؤالك...")
+
     try:
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "أنت خبير في الحضارات والآثار القديمة."},
-                {"role": "user", "content": text}
+                {"role": "system", "content": "أنت خبير في الحضارات القديمة والآثار."},
+                {"role": "user", "content": update.message.text}
             ],
             max_tokens=500,
         )
         answer = response.choices[0].message.content
         await update.message.reply_text(answer)
     except Exception as e:
-        logger.error(f"Text error: {e}")
-        await update.message.reply_text("حدث خطأ أثناء المعالجة. حاول لاحقًا.")
+        logger.error(f"Text AI error: {e}")
+        await update.message.reply_text("حدث خطأ أثناء الإجابة، حاول لاحقًا.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Error: {context.error}")
+    logger.error(f"Update {update} caused error: {context.error}")
     if isinstance(update, Update) and update.message:
-        await update.message.reply_text("حدث خطأ غير متوقع. يرجى المحاولة لاحقًا.")
+        await update.message.reply_text("حدث خطأ غير متوقع. حاول لاحقًا.")
 
 def main() -> None:
-    app = Application.builder().token(telegram_token).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_error_handler(error_handler)
+    application = Application.builder().token(telegram_token).build()
 
-    logger.info(f"✅ Running Webhook on port {PORT}, URL: {WEBHOOK_URL}/{telegram_token}")
-    app.run_webhook(
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_error_handler(error_handler)
+
+    logger.info(f"Running bot with webhook at {WEBHOOK_URL}/{telegram_token} on port {PORT}")
+    application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=telegram_token,
