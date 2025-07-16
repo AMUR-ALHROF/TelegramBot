@@ -1,210 +1,111 @@
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    String,
-    Float,
-    DateTime,
-    Boolean,
-    ForeignKey,
-    func,
-    case,
-    literal_column,
-)
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-from enum import Enum
-import logging
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 
 Base = declarative_base()
 
-# إعداد التسجيل (اللوق)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Enums للأنواع
-class FindType(str, Enum):
-    COIN = "coin"
-    JEWELRY = "jewelry"
-    RELIC = "relic"
-    ARTIFACT = "artifact"
-    BUTTON = "button"
-    BUCKLE = "buckle"
-    TOKEN = "token"
-    OTHER = "other"
-
-class PeriodType(str, Enum):
-    DAY = "day"
-    WEEK = "week"
-    MONTH = "month"
-    YEAR = "year"
-
-# جداول قاعدة البيانات
 class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, index=True)
-    username = Column(String)
-    requests_count = Column(Integer, default=0)
-    last_request_date = Column(DateTime)
+    __tablename__ = 'users'
 
-class Find(Base):
-    __tablename__ = "finds"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    type = Column(String)
-    photo_path = Column(String)
-    value = Column(Float)
-    description = Column(String)
-    date_found = Column(DateTime, default=datetime.utcnow)
-
-    user = relationship("User", backref="finds")
+    user_id = Column(Integer, primary_key=True)
+    balance = Column(Integer, default=0)
+    last_daily = Column(DateTime, default=None)
+    invite_code = Column(String, unique=True)
+    inviter_id = Column(Integer, default=None)
+    invited_friends = Column(Integer, default=0)
 
 class Achievement(Base):
-    __tablename__ = "achievements"
+    __tablename__ = 'achievements'
+
     id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True)
-    description = Column(String)
-    points = Column(Integer)
+    user_id = Column(Integer)
+    name = Column(String)
+    achieved_at = Column(DateTime, default=datetime.utcnow)
 
-class UserAchievement(Base):
-    __tablename__ = "user_achievements"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    achievement_id = Column(Integer, ForeignKey("achievements.id"))
-    date_earned = Column(DateTime, default=datetime.utcnow)
-
-    user = relationship("User", backref="user_achievements")
-    achievement = relationship("Achievement")
-
-# مدير قاعدة البيانات
 class DatabaseManager:
     def __init__(self, db_url="sqlite:///treasure_bot.db"):
-        self.engine = create_engine(db_url, connect_args={"check_same_thread": False})
+        if db_url.startswith("sqlite"):
+            self.engine = create_engine(db_url, connect_args={"check_same_thread": False})
+        else:
+            self.engine = create_engine(db_url)
+
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         self.init_achievements()
 
-    def get_session(self):
-        return self.Session()
-
-    def add_user(self, telegram_id: int, username: str):
-        session = self.get_session()
-        try:
-            user = session.query(User).filter_by(telegram_id=telegram_id).first()
-            if not user:
-                user = User(telegram_id=telegram_id, username=username)
-                session.add(user)
-                session.commit()
-                logger.info(f"User {telegram_id} added.")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error adding user {telegram_id}: {e}")
-            raise
-        finally:
-            session.close()
-
-    def increment_user_requests(self, telegram_id: int):
-        session = self.get_session()
-        try:
-            user = session.query(User).filter_by(telegram_id=telegram_id).first()
-            if user:
-                user.requests_count += 1
-                user.last_request_date = func.now()
-                session.commit()
-                logger.info(f"Incremented requests for user {telegram_id}. New count: {user.requests_count}")
-            else:
-                logger.warning(f"User {telegram_id} not found for request increment.")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error incrementing requests: {e}")
-            raise
-        finally:
-            session.close()
-
-    def add_find(self, telegram_id: int, find_type: FindType, photo_path: str, value: float, description: str):
-        session = self.get_session()
-        try:
-            user = session.query(User).filter_by(telegram_id=telegram_id).first()
-            if not user:
-                raise ValueError("User not found")
-            new_find = Find(
-                user_id=user.id,
-                type=find_type.value,
-                photo_path=photo_path,
-                value=value,
-                description=description,
-            )
-            session.add(new_find)
-            session.commit()
-            logger.info(f"Added new find for user {telegram_id}. Type: {find_type}")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error adding find: {e}")
-            raise
-        finally:
-            session.close()
-
-    def get_top_finds(self, limit=10):
-        session = self.get_session()
-        try:
-            finds = session.query(Find).order_by(Find.value.desc()).limit(limit).all()
-            return finds
-        finally:
-            session.close()
-
     def init_achievements(self):
-        session = self.get_session()
-        try:
-            default_achievements = [
-                {"name": "First Find", "description": "Congratulations on your first find!", "points": 10},
-                {"name": "Treasure Hunter", "description": "Submitted 10 finds.", "points": 50},
-                {"name": "High Roller", "description": "Submitted a find worth over 1000!", "points": 100},
-            ]
-            existing_names = {ach.name for ach in session.query(Achievement).all()}
-            for ach in default_achievements:
-                if ach["name"] not in existing_names:
-                    session.add(Achievement(**ach))
+        self.achievement_list = [
+            {"name": "أول تجميع", "condition": lambda user: user.balance >= 100},
+            {"name": "محترف التجميع", "condition": lambda user: user.balance >= 1000},
+            {"name": "دعوة أول صديق", "condition": lambda user: user.invited_friends >= 1},
+            {"name": "دعوة 5 أصدقاء", "condition": lambda user: user.invited_friends >= 5},
+        ]
+
+    def get_user(self, user_id):
+        session = self.Session()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if not user:
+            user = User(user_id=user_id)
+            session.add(user)
             session.commit()
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error initializing achievements: {e}")
-            raise
-        finally:
-            session.close()
+        session.close()
+        return user
 
-    def award_achievement(self, telegram_id: int, achievement_name: str):
-        session = self.get_session()
-        try:
-            user = session.query(User).filter_by(telegram_id=telegram_id).first()
-            achievement = session.query(Achievement).filter_by(name=achievement_name).first()
-            if not user or not achievement:
-                logger.warning(f"User or Achievement not found. ID: {telegram_id}, Achievement: {achievement_name}")
-                return
-            existing = session.query(UserAchievement).filter_by(
-                user_id=user.id, achievement_id=achievement.id
-            ).first()
-            if not existing:
-                user_ach = UserAchievement(user_id=user.id, achievement_id=achievement.id)
-                session.add(user_ach)
-                session.commit()
-                logger.info(f"Awarded achievement '{achievement_name}' to user {telegram_id}")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error awarding achievement: {e}")
-            raise
-        finally:
-            session.close()
+    def update_balance(self, user_id, amount):
+        session = self.Session()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if user:
+            user.balance += amount
+            session.commit()
+        session.close()
 
-    def get_leaderboard(self, limit=10):
-        session = self.get_session()
-        try:
-            query = session.query(
-                User.telegram_id,
-                User.username,
-                func.coalesce(func.sum(Achievement.points), 0).label("points")
-            ).outerjoin(UserAchievement).outerjoin(Achievement).group_by(User.id)
-            results = query.order_by(literal_column("points").desc()).limit(limit).all()
-            return results
-        finally:
-            session.close()
+    def set_last_daily(self, user_id):
+        session = self.Session()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if user:
+            user.last_daily = datetime.utcnow()
+            session.commit()
+        session.close()
+
+    def check_achievements(self, user_id):
+        session = self.Session()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        earned = []
+        if user:
+            for ach in self.achievement_list:
+                exists = session.query(Achievement).filter_by(user_id=user_id, name=ach["name"]).first()
+                if not exists and ach["condition"](user):
+                    achievement = Achievement(user_id=user_id, name=ach["name"])
+                    session.add(achievement)
+                    earned.append(ach["name"])
+            session.commit()
+        session.close()
+        return earned
+
+    def get_user_achievements(self, user_id):
+        session = self.Session()
+        achievements = session.query(Achievement).filter_by(user_id=user_id).all()
+        session.close()
+        return achievements
+
+    def set_invite_code(self, user_id, code):
+        session = self.Session()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        if user:
+            user.invite_code = code
+            session.commit()
+        session.close()
+
+    def use_invite_code(self, user_id, code):
+        session = self.Session()
+        inviter = session.query(User).filter_by(invite_code=code).first()
+        user = session.query(User).filter_by(user_id=user_id).first()
+        success = False
+        if inviter and user and user.inviter_id is None and inviter.user_id != user_id:
+            user.inviter_id = inviter.user_id
+            inviter.invited_friends += 1
+            session.commit()
+            success = True
+        session.close()
+        return success
