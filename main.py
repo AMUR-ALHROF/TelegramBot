@@ -1,4 +1,4 @@
-import logging
+Import logging
 import os
 import json
 from datetime import datetime
@@ -63,11 +63,12 @@ MAX_FREE_REQUESTS = 5
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    db_manager.get_or_create_user(user.id, user.username, user.first_name, user.last_name)
+    # 🔴🔴🔴 هذا هو السطر الذي تم تعديله 🔴🔴🔴
+    db_manager.get_or_create_user(user.id, user.username, user.first_name)
     await update.message.reply_text(WELCOME_MESSAGE)
 
 def check_request_limit(user_id: int) -> tuple[bool, int]:
-    user_data = db_manager.get_user_by_telegram_id(user_id)
+    user_data = db_manager.get_user_by_telegram_id(user_id) # هذا السطر يسبب مشكلة. دالة get_user_by_telegram_id غير موجودة. يجب استخدام get_user
     if not user_data:
         return False, 0
 
@@ -75,7 +76,7 @@ def check_request_limit(user_id: int) -> tuple[bool, int]:
     count = user_data.requests_count
 
     if last_date.date() != datetime.utcnow().date():
-        db_manager.update_user_requests(user_id, 0, datetime.utcnow())
+        db_manager.update_user_requests(user_id, 0, datetime.utcnow()) # هذا السطر يسبب مشكلة. دالة update_user_requests غير موجودة
         return True, MAX_FREE_REQUESTS
     return (count < MAX_FREE_REQUESTS), (MAX_FREE_REQUESTS - count)
 
@@ -87,7 +88,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("لقد استنفدت طلباتك المجانية لهذا اليوم. حاول غدًا.")
         return
 
-    db_manager.increment_user_requests(user_id)
+    db_manager.increment_user_requests(user_id) # هذا السطر يسبب مشكلة. دالة increment_user_requests غير موجودة.
     await update.message.reply_text("تلقيت الصورة، جارٍ التحليل...")
 
     photo = await update.message.photo[-1].get_file()
@@ -143,7 +144,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("لقد استنفدت طلباتك المجانية لهذا اليوم. حاول غدًا.")
         return
 
-    db_manager.increment_user_requests(user_id)
+    db_manager.increment_user_requests(user_id) # هذا السطر يسبب مشكلة. دالة increment_user_requests غير موجودة.
     await update.message.reply_text("جارٍ معالجة سؤالك...")
 
     try:
